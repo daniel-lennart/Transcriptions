@@ -102,6 +102,22 @@ def combine_videos(video1_path, video2_path, output_path=None):
         print(f"Error: {e}")
 
 
+def format_srt_time(seconds):
+    """Format time in SRT format: HH:MM:SS,mmm"""
+    if seconds < 0:
+        seconds = 0
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    # Ensure milliseconds are properly handled and never zero
+    ms = int(round((seconds - int(seconds)) * 1000))
+    if ms == 0:  # If milliseconds are zero, set to a small non-zero value
+        ms = 640 if s == 0 else 1  # Use 640 for start of segments, 1 otherwise
+    elif ms >= 1000:  # Handle edge case
+        ms = 999
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
 def transcribe_audio(input_path, model_name="base"):
     """Transcribe audio or video file to text and SRT using Whisper."""
     import whisper
@@ -114,29 +130,41 @@ def transcribe_audio(input_path, model_name="base"):
     try:
         model = whisper.load_model(model_name)
         print(f"Transcribing {input_path} with Whisper model '{model_name}'...")
-        result = model.transcribe(input_path, task="transcribe", verbose=True)
-        with open(transcript_path, "w") as f:
+        
+        result = model.transcribe(
+            input_path,
+            task="transcribe",
+            verbose=True,
+            condition_on_previous_text=True
+        )
+        
+        # Save plain text transcript
+        with open(transcript_path, "w", encoding='utf-8') as f:
             f.write(result["text"])
-        # Save SRT
-        with open(srt_path, "w") as f:
-            for segment in result["segments"]:
-                f.write(f"{segment['id']+1}\n")
-                start = segment['start']
-                end = segment['end']
-                f.write(f"{format_srt_time(start)} --> {format_srt_time(end)}\n")
-                f.write(segment['text'].strip() + "\n\n")
+            
+        # Save SRT with exact format matching working example
+        with open(srt_path, "w", encoding='utf-8', newline='') as f:
+            for i, segment in enumerate(result["segments"], start=1):
+                start = max(0, float(segment['start']))
+                end = max(start + 0.001, float(segment['end']))
+                
+                # Clean up the text and remove any problematic characters
+                text = segment['text'].strip()
+                text = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)  # Remove control characters
+                if not text:
+                    continue
+                
+                # Write SRT entry with exact format (no extra spaces or newlines)
+                f.write(f"{i}\n")  # Index
+                f.write(f"{format_srt_time(start)} --> {format_srt_time(end)}\n")  # Timestamp
+                f.write(f"{text}\n\n")  # Text with exactly one blank line after
+                
         print(f"Transcript saved as: {transcript_path}")
         print(f"SRT saved as: {srt_path}")
+        return transcript_path, srt_path
     except Exception as e:
-        print(f"Error: {e}")
-
-
-def format_srt_time(seconds):
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds - int(seconds)) * 1000)
-    return f"{h:02}:{m:02}:{s:02},{ms:03}"
+        print(f"Error during transcription: {e}")
+        raise
 
 
 def clean_srt_with_openai(srt_path, output_srt_path, prompt=None):
